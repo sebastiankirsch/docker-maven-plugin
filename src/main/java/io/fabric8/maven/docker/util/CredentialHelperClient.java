@@ -28,18 +28,21 @@ public class CredentialHelperClient {
         return credentialHelperName;
     }
 
-    public String getVersion() throws MojoExecutionException {
+    public String getVersion() {
         try {
             return new VersionCommand().getVersion();
         } catch (IOException e) {
-            throw new MojoExecutionException("Error getting the version of the configured credential helper",e);
+            return null;
         }
     }
 
     public AuthConfig getAuthConfig(String registryToLookup) throws MojoExecutionException {
         try {
-            final GetCommand getCommand = new GetCommand();
-            return toAuthConfig(getCommand.getCredentialNode(EnvUtil.ensureRegistryHttpUrl(registryToLookup)));
+            JsonObject creds = new GetCommand().getCredentialNode(registryToLookup);
+            if (creds == null) {
+                creds = new GetCommand().getCredentialNode(EnvUtil.ensureRegistryHttpUrl(registryToLookup));
+            }
+            return toAuthConfig(creds);
         } catch (IOException e) {
             throw new MojoExecutionException("Error getting the credentials for " + registryToLookup + " from the configured credential helper",e);
         }
@@ -70,15 +73,12 @@ public class CredentialHelperClient {
 
         @Override
         protected void processLine(String line) {
-            log.verbose("Credentials helper reply for \"%s\" is %s",CredentialHelperClient.this.credentialHelperName,line);
+            log.verbose(Logger.LogVerboseCategory.BUILD,"Credentials helper reply for \"%s\" is %s",CredentialHelperClient.this.credentialHelperName,line);
             version = line;
         }
 
         public String getVersion() throws IOException {
             execute();
-            if (version == null) {
-                log.verbose("The credentials helper \"%s\" didn't return a version string",CredentialHelperClient.this.credentialHelperName);
-            }
             return version;
         }
     }

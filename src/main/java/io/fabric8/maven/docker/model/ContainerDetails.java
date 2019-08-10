@@ -1,16 +1,14 @@
 package io.fabric8.maven.docker.model;
 
-import com.google.common.base.Joiner;
-import com.google.gson.JsonObject;
-
-import java.util.Calendar;
+import java.time.Instant;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 
-import javax.xml.bind.DatatypeConverter;
+import com.google.common.base.Joiner;
+import com.google.gson.JsonObject;
 
 
 public class ContainerDetails implements Container {
@@ -24,6 +22,8 @@ public class ContainerDetails implements Container {
     static final String LABELS = "Labels";
     static final String NAME = "Name";
     static final String IP = "IPAddress";
+    static final String HOST_CONFIG = "HostConfig";
+    static final String NETWORK_MODE = "NetworkMode";
     static final String NETWORK_SETTINGS = "NetworkSettings";
     static final String NETWORKS = "Networks";
     static final String PORTS = "Ports";
@@ -47,8 +47,8 @@ public class ContainerDetails implements Container {
     @Override
     public long getCreated() {
         String date = json.get(CREATED).getAsString();
-        Calendar cal = DatatypeConverter.parseDateTime(date);
-        return cal.getTimeInMillis();
+        Instant instant = Instant.parse(date);
+        return instant.toEpochMilli();
     }
 
     @Override
@@ -91,6 +91,17 @@ public class ContainerDetails implements Container {
         }
         return null;
     }
+
+		@Override
+		public String getNetworkMode() {
+			if (json.has(HOST_CONFIG) && !json.get(HOST_CONFIG).isJsonNull()) {
+				final JsonObject hostConfig = json.getAsJsonObject(HOST_CONFIG);
+				if (!hostConfig.get(NETWORK_MODE).isJsonNull()) {
+          return hostConfig.get(NETWORK_MODE).getAsString();
+				}
+			}
+			return null;
+		}
 
     @Override
     public Map<String, String> getCustomNetworkIpAddresses() {

@@ -23,6 +23,8 @@ public class DockerFileBuilder {
 
     private static final Joiner JOIN_ON_COMMA = Joiner.on("\",\"");
 
+    private static final Pattern ENV_VAR_PATTERN = Pattern.compile("^\\$(\\{[a-zA-Z0-9_]+\\}|[a-zA-Z0-9_]+).*");
+
     // Base image to use as from
     private String baseImage;
 
@@ -55,6 +57,9 @@ public class DockerFileBuilder {
 
     // list of ports to expose and environments to use
     private List<String> ports = new ArrayList<>();
+
+    // SHELL executable and params to be used with the runCmds see issue #1156 on github
+    private Arguments shell;
 
     // list of RUN Commands to run along with image build see issue #191 on github
     private List<String> runCmds = new ArrayList<>();
@@ -106,6 +111,7 @@ public class DockerFileBuilder {
 
         addCopy(b);
         addWorkdir(b);
+        addShell(b);
         addRun(b);
         addVolumes(b);
 
@@ -173,6 +179,11 @@ public class DockerFileBuilder {
         } else {
             arg = "[\""  + JOIN_ON_COMMA.join(arguments.getExec()) + "\"]";
         }
+        key.addTo(b, newline, arg);
+    }
+
+    private static void buildArgumentsAsJsonFormat(StringBuilder b, DockerFileKeyword key, boolean newline, Arguments arguments) {
+        String arg = "[\""  + JOIN_ON_COMMA.join(arguments.asStrings()) + "\"]";
         key.addTo(b, newline, arg);
     }
 
@@ -306,6 +317,12 @@ public class DockerFileBuilder {
         }
     }
 
+    private void addShell(StringBuilder b) {
+        if (shell != null) {
+            buildArgumentsAsJsonFormat(b, DockerFileKeyword.SHELL, true, shell);
+        }
+    }
+
 	private void addRun(StringBuilder b) {
 		for (String run : runCmds) {
             DockerFileKeyword.RUN.addTo(b, run);
@@ -355,9 +372,9 @@ public class DockerFileBuilder {
 
     public DockerFileBuilder basedir(String dir) {
         if (dir != null) {
-            if (!dir.startsWith("/")) {
+            if (!dir.startsWith("/") && !ENV_VAR_PATTERN.matcher(dir).matches()) {
                 throw new IllegalArgumentException("'basedir' must be an absolute path starting with / (and not " +
-                                                   "'" + basedir + "')");
+                                                   "'" + basedir + "') or start with an environment variable");
             }
             basedir = dir;
         }
@@ -398,6 +415,16 @@ public class DockerFileBuilder {
         if (ports != null) {
             this.ports.addAll(ports);
         }
+        return this;
+    }
+
+    /**
+     * Adds the SHELL Command plus params within the build image section
+     * @param shell
+     * @return
+     */
+    public DockerFileBuilder shell(Arguments shell) {
+        this.shell = shell;
         return this;
     }
 

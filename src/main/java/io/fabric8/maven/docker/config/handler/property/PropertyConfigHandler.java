@@ -74,6 +74,8 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
         WatchImageConfiguration watch = extractWatchConfig(fromConfig, valueProvider);
         String name = valueProvider.getString(NAME, fromConfig.getName());
         String alias = valueProvider.getString(ALIAS, fromConfig.getAlias());
+        String removeNamePattern = valueProvider.getString(REMOVE_NAME_PATTERN, fromConfig.getRemoveNamePattern());
+        String stopNamePattern = valueProvider.getString(STOP_NAME_PATTERN, fromConfig.getStopNamePattern());
 
         if (name == null) {
             throw new IllegalArgumentException(String.format("Mandatory property [%s] is not defined", NAME));
@@ -83,6 +85,8 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
                 new ImageConfiguration.Builder()
                         .name(name)
                         .alias(alias)
+                        .removeNamePattern(removeNamePattern)
+                        .stopNamePattern(stopNamePattern)
                         .runConfig(run)
                         .buildConfig(build)
                         .watchConfig(watch)
@@ -110,6 +114,10 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
             return true;
         }
 
+        if (isStringValueNull(valueProvider, config, CONTEXT_DIR, () -> config.getContextDirRaw())) {
+            return true;
+        }
+
         if (isStringValueNull(valueProvider, config, DOCKER_FILE_DIR, () -> config.getDockerFileDirRaw())) {
             return true;
         }
@@ -128,7 +136,8 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
         return new BuildImageConfiguration.Builder()
                 .cmd(extractArguments(valueProvider, CMD, config == null ? null : config.getCmd()))
                 .cleanup(valueProvider.getString(CLEANUP, config == null ? null : config.getCleanup()))
-                .nocache(valueProvider.getBoolean(NOCACHE, config == null ? null : config.getNoCache()))
+                .noCache(valueProvider.getBoolean(NO_CACHE, config == null ? null : config.getNoCache()))
+                .cacheFrom(valueProvider.getString(CACHE_FROM, config == null ? null : config.getCacheFrom().toString()))
                 .optimise(valueProvider.getBoolean(OPTIMISE, config == null ? null : config.getOptimise()))
                 .entryPoint(extractArguments(valueProvider, ENTRYPOINT, config == null ? null : config.getEntryPoint()))
                 .assembly(extractAssembly(config == null ? null : config.getAssemblyConfiguration(), valueProvider))
@@ -139,6 +148,7 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
                 .args(valueProvider.getMap(ARGS, config == null ? null : config.getArgs()))
                 .labels(valueProvider.getMap(LABELS, config == null ? null : config.getLabels()))
                 .ports(extractPortValues(config == null ? null : config.getPorts(), valueProvider))
+                .shell(extractArguments(valueProvider, SHELL, config == null ? null : config.getShell()))
                 .runCmds(valueProvider.getList(RUN, config == null ? null : config.getRunCmds()))
                 .from(valueProvider.getString(FROM, config == null ? null : config.getFrom()))
                 .fromExt(valueProvider.getMap(FROM_EXT, config == null ? null : config.getFromExt()))
@@ -149,7 +159,9 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
                 .workdir(valueProvider.getString(WORKDIR, config == null ? null : config.getWorkdir()))
                 .skip(valueProvider.getBoolean(SKIP_BUILD, config == null ? null : config.getSkip()))
                 .imagePullPolicy(valueProvider.getString(IMAGE_PULL_POLICY_BUILD, config == null ? null : config.getImagePullPolicy()))
+                .contextDir(valueProvider.getString(CONTEXT_DIR, config == null ? null : config.getContextDirRaw()))
                 .dockerArchive(valueProvider.getString(DOCKER_ARCHIVE, config == null ? null : config.getDockerArchiveRaw()))
+                .loadNamePattern(valueProvider.getString(LOAD_NAME_PATTERN, config == null ? null : config.getLoadNamePattern()))
                 .dockerFile(valueProvider.getString(DOCKER_FILE, config == null ? null : config.getDockerFileRaw()))
                 .dockerFileDir(valueProvider.getString(DOCKER_FILE_DIR, config == null ? null : config.getDockerFileDirRaw()))
                 .buildOptions(valueProvider.getMap(BUILD_OPTIONS, config == null ? null : config.getBuildOptions()))
@@ -204,6 +216,11 @@ public class PropertyConfigHandler implements ExternalConfigHandler {
                 .imagePullPolicy(valueProvider.getString(IMAGE_PULL_POLICY_RUN, config == null ? null : config.getImagePullPolicy()))
                 .ulimits(extractUlimits(config == null ? null : config.getUlimits(), valueProvider))
                 .tmpfs(valueProvider.getList(TMPFS, config == null ? null : config.getTmpfs()))
+                .cpuShares(valueProvider.getLong(CPUSHARES, config == null ? null : config.getCpuShares()))
+                .cpus(valueProvider.getLong(CPUS, config == null ? null : config.getCpus()))
+                .cpuSet(valueProvider.getString(CPUSET, config == null ? null : config.getCpuSet()))
+                .readOnly(valueProvider.getBoolean(READ_ONLY, config == null ? null : config.getReadOnly()))
+                .autoRemove(valueProvider.getBoolean(AUTO_REMOVE, config == null ? null : config.getAutoRemove()))
                 .build();
     }
 

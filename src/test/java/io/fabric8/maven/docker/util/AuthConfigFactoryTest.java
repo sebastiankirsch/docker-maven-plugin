@@ -1,8 +1,21 @@
 package io.fabric8.maven.docker.util;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
-
+import io.fabric8.maven.docker.access.AuthConfig;
+import mockit.Expectations;
+import mockit.Mock;
+import mockit.Mocked;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.settings.Server;
 import org.apache.maven.settings.Settings;
@@ -16,24 +29,7 @@ import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.ExpectedException;
-import org.junit.runner.RunWith;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
-
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.Writer;
-import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import io.fabric8.maven.docker.access.AuthConfig;
-import mockit.Expectations;
-import mockit.Mock;
-import mockit.Mocked;
-import mockit.integration.junit4.JMockit;
 
 import static java.util.Collections.singletonMap;
 import static org.hamcrest.CoreMatchers.containsString;
@@ -48,7 +44,7 @@ import static org.junit.Assert.assertNull;
  * @author roland
  * @since 29.07.14
  */
-@RunWith(JMockit.class)
+
 public class AuthConfigFactoryTest {
 
     public static final String ECR_NAME = "123456789012.dkr.ecr.bla.amazonaws.com";
@@ -116,6 +112,50 @@ public class AuthConfigFactoryTest {
         }
     }
 
+    private void testSystemProperty(String prefix) throws Exception {
+        System.setProperty(prefix + ".username", "roland");
+        System.setProperty(prefix + ".password", "secret");
+        System.setProperty(prefix + ".email", "roland@jolokia.org");
+        try {
+            AuthConfig config = factory.createAuthConfig(true, false, null, settings, null, null);
+            verifyAuthConfig(config, "roland", "secret", "roland@jolokia.org");
+        } finally {
+            System.clearProperty(prefix + ".username");
+            System.clearProperty(prefix + ".password");
+            System.clearProperty(prefix + ".email");
+        }
+    }
+
+    @Test
+    public void testDockerSystemProperty() throws Exception {
+        testSystemProperty("docker");
+    }
+
+    @Test
+    public void testRegistrySystemProperty() throws Exception {
+        testSystemProperty("registry");
+    }
+
+    @Test
+    public void testDockerSystemPropertyHasPrecedence() throws Exception {
+        System.setProperty("docker.username", "roland");
+        System.setProperty("docker.password", "secret");
+        System.setProperty("docker.email", "roland@jolokia.org");
+        System.setProperty("registry.username", "_roland");
+        System.setProperty("registry.password", "_secret1");
+        System.setProperty("registry.email", "_1roland@jolokia.org");
+        try {
+            AuthConfig config = factory.createAuthConfig(true, false, null, settings, null, null);
+            verifyAuthConfig(config, "roland", "secret", "roland@jolokia.org");
+        } finally {
+            System.clearProperty("docker.username");
+            System.clearProperty("docker.password");
+            System.clearProperty("docker.email");
+            System.clearProperty("registry.username");
+            System.clearProperty("registry.password");
+            System.clearProperty("registry.email");
+        }
+    }
 
     @Test
     public void testDockerAuthLogin() throws Exception {
@@ -171,9 +211,9 @@ public class AuthConfigFactoryTest {
             public void exec(File homeDir) throws IOException, MojoExecutionException {
                 writeDockerConfigJson(createDockerConfig(homeDir),"credsStore-does-not-exist",singletonMap("registry1", "credHelper1-does-not-exist"));
                 expectedException.expect(MojoExecutionException.class);
-                expectedException.expectCause(Matchers.<Throwable>allOf(
+                expectedException.expectCause(Matchers.allOf(
                         instanceOf(IOException.class),
-                        hasProperty("message",startsWith("Failed to start 'docker-credential-credHelper1-does-not-exist version'"))
+                        hasProperty("message",startsWith("Failed to start 'docker-credential-credHelper1-does-not-exist get'"))
                 ));
                 factory.createAuthConfig(isPush,false,null,settings,"roland","registry1");
             }
@@ -187,9 +227,9 @@ public class AuthConfigFactoryTest {
             public void exec(File homeDir) throws IOException, MojoExecutionException {
                 writeDockerConfigJson(createDockerConfig(homeDir),"credsStore-does-not-exist",singletonMap("registry1", "credHelper1-does-not-exist"));
                 expectedException.expect(MojoExecutionException.class);
-                expectedException.expectCause(Matchers.<Throwable>allOf(
+                expectedException.expectCause(Matchers.allOf(
                         instanceOf(IOException.class),
-                        hasProperty("message",startsWith("Failed to start 'docker-credential-credsStore-does-not-exist version'"))
+                        hasProperty("message",startsWith("Failed to start 'docker-credential-credsStore-does-not-exist get'"))
                 ));
                 factory.createAuthConfig(isPush,false,null,settings,"roland",null);
             }
@@ -203,9 +243,9 @@ public class AuthConfigFactoryTest {
             public void exec(File homeDir) throws IOException, MojoExecutionException {
                 writeDockerConfigJson(createDockerConfig(homeDir),"credsStore-does-not-exist",singletonMap("registry1", "credHelper1-does-not-exist"));
                 expectedException.expect(MojoExecutionException.class);
-                expectedException.expectCause(Matchers.<Throwable>allOf(
+                expectedException.expectCause(Matchers.allOf(
                         instanceOf(IOException.class),
-                        hasProperty("message",startsWith("Failed to start 'docker-credential-credsStore-does-not-exist version'"))
+                        hasProperty("message",startsWith("Failed to start 'docker-credential-credsStore-does-not-exist get'"))
                 ));
                 factory.createAuthConfig(isPush,false,null,settings,"roland","registry2");
             }

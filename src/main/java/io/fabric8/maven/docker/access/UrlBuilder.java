@@ -44,6 +44,12 @@ public final class UrlBuilder {
                 .build();
     }
 
+    public String listImages(boolean all) {
+        return u("images/json")
+                .p("all", all)
+                .build();
+    }
+
     public String containerLogs(String containerId, boolean follow) {
         return u("containers/%s/logs", containerId)
                 .p("stdout",true)
@@ -98,7 +104,7 @@ public final class UrlBuilder {
     public String pullImage(ImageName name, String registry) {
         return u("images/create")
                 .p("fromImage", name.getNameWithoutTag(registry))
-                .p("tag", name.getTag())
+                .p("tag", name.getDigest() != null ? name.getDigest() : name.getTag())
                 .build();
     }
 

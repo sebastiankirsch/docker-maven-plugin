@@ -1,14 +1,17 @@
 package io.fabric8.maven.docker.util;
 
-import com.google.gson.Gson;
-import com.google.gson.JsonObject;
-
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileReader;
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.Reader;
+import com.google.gson.JsonObject;
+
+import java.io.IOException;
 import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -16,8 +19,14 @@ import java.util.Properties;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import io.fabric8.maven.docker.access.AuthConfig;
-import io.fabric8.maven.docker.access.ecr.EcrExtendedAuth;
+import org.apache.commons.io.IOUtils;
+import org.apache.http.HttpStatus;
+import org.apache.http.client.config.RequestConfig;
+import org.apache.http.client.methods.CloseableHttpResponse;
+import org.apache.http.client.methods.HttpGet;
+import org.apache.http.conn.ConnectTimeoutException;
+import org.apache.http.impl.client.CloseableHttpClient;
+import org.apache.http.impl.client.HttpClients;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.settings.Server;
@@ -26,7 +35,13 @@ import org.codehaus.plexus.PlexusContainer;
 import org.codehaus.plexus.component.repository.exception.ComponentLookupException;
 import org.codehaus.plexus.util.xml.Xpp3Dom;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
-import org.yaml.snakeyaml.Yaml;
+
+import com.google.common.net.UrlEscapers;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
+
+import io.fabric8.maven.docker.access.AuthConfig;
+import io.fabric8.maven.docker.access.ecr.EcrExtendedAuth;
 
 /**
  * Factory for creating docker specific authentication configuration
@@ -47,7 +62,6 @@ public class AuthConfigFactory {
     static final String DOCKER_LOGIN_DEFAULT_REGISTRY = "https://index.docker.io/v1/";
 
     private final PlexusContainer container;
-    private final Gson gson;
 
     private Logger log;
     private static final String[] DEFAULT_REGISTRIES = new String[]{
@@ -61,7 +75,6 @@ public class AuthConfigFactory {
      */
     public AuthConfigFactory(PlexusContainer container) {
         this.container = container;
-        this.gson = new Gson();
     }
 
     public void setLog(Logger log) {
@@ -94,7 +107,7 @@ public class AuthConfigFactory {
      *  and exchanged for ecr credentials.
      *
      * @param isPush if true this AuthConfig is created for a push, if false it's for a pull
-     * @param skipExtendedAuth if false, do not execute extended authentication methods
+     * @param skipExtendedAuth if true, do not execute extended authentication methods
      * @param authConfig String-String Map holding configuration info from the plugin's configuration. Can be <code>null</code> in
      *                   which case the settings are consulted.
      * @param settings the global Maven settings object
@@ -161,7 +174,7 @@ public class AuthConfigFactory {
      *    <li>From the Maven settings stored typically in ~/.m2/settings.xml</li>
      * </ul>
      *
-     * The following properties (prefix with 'docker.') and config key are evaluated:
+     * The following properties (prefix with 'docker.' or 'registry.') and config key are evaluated:
      *
      * <ul>
      *     <li>username: User to authenticate</li>
@@ -185,7 +198,7 @@ public class AuthConfigFactory {
         AuthConfig ret;
 
         // Check first for specific configuration based on direction (pull or push), then for a default value
-        for (LookupMode lookupMode : new LookupMode[] { getLookupMode(isPush), LookupMode.DEFAULT }) {
+        for (LookupMode lookupMode : new LookupMode[] { getLookupMode(isPush), LookupMode.DEFAULT, LookupMode.REGISTRY}) {
             // System properties docker.username and docker.password always take precedence
             ret = getAuthConfigFromSystemProperties(lookupMode);
             if (ret != null) {
@@ -194,10 +207,12 @@ public class AuthConfigFactory {
             }
 
             // Check for openshift authentication either from the plugin config or from system props
-            ret = getAuthConfigFromOpenShiftConfig(lookupMode, authConfigMap);
-            if (ret != null) {
-                log.debug("AuthConfig: OpenShift credentials");
-                return ret;
+            if (lookupMode != LookupMode.REGISTRY) {
+                ret = getAuthConfigFromOpenShiftConfig(lookupMode, authConfigMap);
+                if (ret != null) {
+                    log.debug("AuthConfig: OpenShift credentials");
+                    return ret;
+                }
             }
 
             // Get configuration from global plugin config
@@ -218,11 +233,141 @@ public class AuthConfigFactory {
             return ret;
         }
 
+        // check EC2 instance role if registry is ECR
+        if (EcrExtendedAuth.isAwsRegistry(registry)) {
+            try {
+                ret = getAuthConfigFromEC2InstanceRole();
+            } catch (ConnectTimeoutException ex) {
+                log.debug("Connection timeout while retrieving instance meta-data, likely not an EC2 instance (%s)",
+                        ex.getMessage());
+            } catch (IOException ex) {
+                // don't make that an error since it may fail if not run on an EC2 instance
+                log.warn("Error while retrieving EC2 instance credentials: %s", ex.getMessage());
+            }
+            if (ret != null) {
+                log.debug("AuthConfig: credentials from EC2 instance role");
+                return ret;
+            }
+
+            try {
+                ret = getAuthConfigFromECSTaskRole();
+            } catch (ConnectTimeoutException ex) {
+                log.debug("Connection timeout while retrieving ECS meta-data, likely not an ECS instance (%s)",
+                        ex.getMessage());
+            } catch (IOException ex) {
+                log.warn("Error while retrieving ECS Task role credentials: %s", ex.getMessage());
+            }
+            if (ret != null) {
+                log.debug("AuthConfig: credentials from ECS Task role");
+                return ret;
+            }
+        }
+
         // No authentication found
         return null;
     }
 
     // ===================================================================================================
+
+
+    // if the local credentials don't contain user and password, use EC2 instance
+    // role credentials
+    private AuthConfig getAuthConfigFromEC2InstanceRole() throws IOException {
+        log.debug("No user and password set for ECR, checking EC2 instance role");
+        try (CloseableHttpClient client = HttpClients.custom().useSystemProperties().build()) {
+            // we can set very low timeouts because the request returns almost instantly on
+            // an EC2 instance
+            // on a non-EC2 instance we can fail early
+            RequestConfig conf = RequestConfig.custom().setConnectionRequestTimeout(1000).setConnectTimeout(1000)
+                    .setSocketTimeout(1000).build();
+
+            // get instance role - if available
+            HttpGet request = new HttpGet("http://169.254.169.254/latest/meta-data/iam/security-credentials");
+            request.setConfig(conf);
+            String instanceRole;
+            try (CloseableHttpResponse response = client.execute(request)) {
+                if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
+                    // no instance role found
+                    log.debug("No instance role found, return code was %d", response.getStatusLine().getStatusCode());
+                    return null;
+                }
+
+                // read instance role
+                try (InputStream is = response.getEntity().getContent()) {
+                    instanceRole = IOUtils.toString(is, StandardCharsets.UTF_8);
+                }
+            }
+            log.debug("Found instance role %s, getting temporary security credentials", instanceRole);
+
+            // get temporary credentials
+            request = new HttpGet("http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+                    + UrlEscapers.urlPathSegmentEscaper().escape(instanceRole));
+            request.setConfig(conf);
+            try (CloseableHttpResponse response = client.execute(request)) {
+                if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
+                    log.debug("No security credential found, return code was %d",
+                            response.getStatusLine().getStatusCode());
+                    // no instance role found
+                    return null;
+                }
+
+                // read instance role
+                try (Reader r = new InputStreamReader(response.getEntity().getContent(), StandardCharsets.UTF_8)) {
+                    JsonObject securityCredentials = new Gson().fromJson(r, JsonObject.class);
+
+                    String user = securityCredentials.getAsJsonPrimitive("AccessKeyId").getAsString();
+                    String password = securityCredentials.getAsJsonPrimitive("SecretAccessKey").getAsString();
+                    String token = securityCredentials.getAsJsonPrimitive("Token").getAsString();
+
+                    log.debug("Received temporary access key %s...", user.substring(0, 8));
+                    return new AuthConfig(user, password, "none", token);
+                }
+            }
+        }
+    }
+
+    // if the local credentials don't contain user and password & is not a EC2 instance, use ECS Task instance
+    // role credentials
+    private AuthConfig getAuthConfigFromECSTaskRole() throws IOException {
+        log.debug("No user and password set for ECR, checking ECS Task role");
+        try (CloseableHttpClient client = HttpClients.custom().useSystemProperties().build()) {
+            RequestConfig conf = RequestConfig.custom().setConnectionRequestTimeout(1000).setConnectTimeout(1000)
+                    .setSocketTimeout(1000).build();
+
+            // get ECS task role - if available
+            String awsContainerCredentialsUri = System.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI");
+            if (awsContainerCredentialsUri == null) {
+                log.debug("System environment not set for variable AWS_CONTAINER_CREDENTIALS_RELATIVE_URI, no task role found");
+                return null;
+            }
+
+            log.debug("Getting temporary security credentials from: %s", awsContainerCredentialsUri);
+
+            // get temporary credentials
+            HttpGet request = new HttpGet("http://169.254.170.2/" + UrlEscapers.urlPathSegmentEscaper().escape(awsContainerCredentialsUri));
+            request.setConfig(conf);
+            try (CloseableHttpResponse response = client.execute(request)) {
+                if (response.getStatusLine().getStatusCode() != HttpStatus.SC_OK) {
+                    log.debug("No security credential found, return code was %d",
+                            response.getStatusLine().getStatusCode());
+                    // no task role found
+                    return null;
+                }
+
+                // read task role
+                try (Reader r = new InputStreamReader(response.getEntity().getContent(), StandardCharsets.UTF_8)) {
+                    JsonObject securityCredentials = new Gson().fromJson(r, JsonObject.class);
+
+                    String user = securityCredentials.getAsJsonPrimitive("AccessKeyId").getAsString();
+                    String password = securityCredentials.getAsJsonPrimitive("SecretAccessKey").getAsString();
+                    String token = securityCredentials.getAsJsonPrimitive("Token").getAsString();
+
+                    log.debug("Received temporary access key %s...", user.substring(0, 8));
+                    return new AuthConfig(user, password, "none", token);
+                }
+            }
+        }
+    }
 
     private AuthConfig getAuthConfigFromSystemProperties(LookupMode lookupMode) throws MojoExecutionException {
         Properties props = System.getProperties();
@@ -299,7 +444,7 @@ public class AuthConfigFactory {
     }
 
     private AuthConfig getAuthConfigFromDockerConfig(String registry) throws MojoExecutionException {
-        JsonObject dockerConfig = readDockerConfig();
+        JsonObject dockerConfig = DockerFileUtil.readDockerConfig();
         if (dockerConfig == null) {
             return null;
         }
@@ -330,15 +475,17 @@ public class AuthConfigFactory {
             return null;
         }
         String auth = credentials.get("auth").getAsString();
+        String identityToken = credentials.has("identitytoken") ? credentials.get("identitytoken").getAsString() : null;
         String email = credentials.has(AUTH_EMAIL) ? credentials.get(AUTH_EMAIL).getAsString() : null;
-        return new AuthConfig(auth,email);
+        return new AuthConfig(auth, email, identityToken);
     }
 
     private AuthConfig extractAuthConfigFromCredentialsHelper(String registryToLookup, String credConfig) throws MojoExecutionException {
         CredentialHelperClient credentialHelper = new CredentialHelperClient(log, credConfig);
-        log.debug("AuthConfig: credentials from credential helper/store %s version %s",
+        String version = credentialHelper.getVersion();
+        log.debug("AuthConfig: credentials from credential helper/store %s%s",
                   credentialHelper.getName(),
-                  credentialHelper.getVersion());
+                  version != null ? " version " + version : "");
         return credentialHelper.getAuthConfig(registryToLookup);
     }
 
@@ -368,7 +515,7 @@ public class AuthConfigFactory {
 
     // Parse OpenShift config to get credentials, but return null if not found
     private AuthConfig parseOpenShiftConfig() {
-        Map kubeConfig = readKubeConfig();
+        Map kubeConfig = DockerFileUtil.readKubeConfig();
         if (kubeConfig == null) {
             return null;
         }
@@ -436,49 +583,6 @@ public class AuthConfigFactory {
                           useOpenAuthModeProp, kubeConfigEnv != null ? kubeConfigEnv : "~/.kube/config"));
 
     }
-   
-    private JsonObject readDockerConfig() {
-        String dockerConfig = System.getenv("DOCKER_CONFIG");
-
-        Reader reader = dockerConfig == null
-                    ? getFileReaderFromDir(new File(getHomeDir(),".docker/config.json"))
-                    : getFileReaderFromDir(new File(dockerConfig,"config.json"));
-        return reader != null ? gson.fromJson(reader, JsonObject.class) : null;
-    }
-
-    private Map<String,?> readKubeConfig() {
-        String kubeConfig = System.getenv("KUBECONFIG");
-
-        Reader reader = kubeConfig == null
-                ? getFileReaderFromDir(new File(getHomeDir(),".kube/config"))
-                : getFileReaderFromDir(new File(kubeConfig));
-        if (reader != null) {
-            Yaml ret = new Yaml();
-            return (Map<String, ?>) ret.load(reader);
-        }
-        return null;
-    }
-
-    private Reader getFileReaderFromDir(File file) {
-        if (file.exists() && file.length() != 0) {
-            try {
-                return new FileReader(file);
-            } catch (FileNotFoundException e) {
-                // Shouldnt happen. Nevertheless ...
-                throw new IllegalStateException("Cannot find " + file,e);
-            }
-        } else {
-            return null;
-        }
-    }
-
-    private File getHomeDir() {
-        String homeDir = System.getProperty("user.home");
-        if (homeDir == null) {
-            homeDir = System.getenv("HOME");
-        }
-        return new File(homeDir);
-    }
 
 
     private Server checkForServer(Server server, String id, String registry, String user) {
@@ -535,6 +639,7 @@ public class AuthConfigFactory {
     private enum LookupMode {
         PUSH("docker.push.","push"),
         PULL("docker.pull.","pull"),
+        REGISTRY("registry.",null),
         DEFAULT("docker.",null);
 
         private final String sysPropPrefix;

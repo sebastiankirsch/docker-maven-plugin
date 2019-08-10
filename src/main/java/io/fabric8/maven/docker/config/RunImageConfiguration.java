@@ -107,6 +107,15 @@ public class RunImageConfiguration implements Serializable {
     @Parameter
     private List<String> extraHosts;
 
+    @Parameter
+    private Long cpuShares;
+
+    @Parameter
+    private Long cpus;
+
+    @Parameter
+    private String cpuSet;
+
     // Port mapping. Can contain symbolic names in which case dynamic
     // ports are used
     @Parameter
@@ -164,12 +173,20 @@ public class RunImageConfiguration implements Serializable {
 
     @Parameter
     private Boolean skip;
-
+    
     /**
      * Policy for pulling the image to start
      */
     @Parameter
     private String imagePullPolicy;
+
+    // Mount the container's root filesystem as read only
+    @Parameter
+    private Boolean readOnly;
+
+    // Automatically remove the container when it exists
+    @Parameter
+    private Boolean autoRemove;
 
     public RunImageConfiguration() { }
 
@@ -233,6 +250,18 @@ public class RunImageConfiguration implements Serializable {
 
     public Long getMemorySwap() {
         return memorySwap;
+    }
+
+    public Long getCpuShares() {
+        return cpuShares;
+    }
+
+    public Long getCpus() {
+        return cpus;
+    }
+
+    public String getCpuSet() {
+        return cpuSet;
     }
 
     @Nonnull
@@ -362,6 +391,14 @@ public class RunImageConfiguration implements Serializable {
 
     public String getContainerNamePattern() {
         return containerNamePattern;
+    }
+
+    public Boolean getReadOnly() {
+        return readOnly;
+    }
+
+    public Boolean getAutoRemove() {
+        return autoRemove;
     }
 
     /**
@@ -543,6 +580,21 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder cpuShares(Long cpuShares){
+            config.cpuShares = cpuShares;
+            return this;
+        }
+
+        public Builder cpus(Long cpus){
+            config.cpus = cpus;
+            return this;
+        }
+
+        public Builder cpuSet(String cpuSet){
+            config.cpuSet = cpuSet;
+            return this;
+        }
+
         public Builder containerNamePattern(String pattern) {
             config.containerNamePattern = pattern;
             return this;
@@ -595,6 +647,15 @@ public class RunImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder readOnly(Boolean readOnly) {
+            config.readOnly = readOnly;
+            return this;
+        }
+
+        public Builder autoRemove(Boolean autoRemove) {
+            config.autoRemove = autoRemove;
+            return this;
+        }
 
         public RunImageConfiguration build() {
             return config;

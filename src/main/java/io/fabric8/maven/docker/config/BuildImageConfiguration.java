@@ -3,6 +3,8 @@ package io.fabric8.maven.docker.config;
 import java.io.File;
 import java.io.Serializable;
 import java.util.*;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 import io.fabric8.maven.docker.util.*;
 import org.apache.maven.plugins.annotations.Parameter;
@@ -19,14 +21,22 @@ public class BuildImageConfiguration implements Serializable {
     public static final String DEFAULT_CLEANUP = "try";
 
     /**
+     * Directory is used as build context.
+     * If not specified, dockerfile's parent directory is used as build context.
+     */
+    @Parameter
+    private String contextDir;
+
+    /**
      * Directory holding an external Dockerfile which is used to build the
      * image. This Dockerfile will be enriched by the addition build configuration
      */
     @Parameter
+    @Deprecated
     private String dockerFileDir;
 
     /**
-     * Path to a dockerfile to use. Its parent directory is used as build context (i.e. as <code>dockerFileDir</code>).
+     * Path to a dockerfile to use.
      * Multiple different Dockerfiles can be specified that way. If set overwrites a possibly givem
      * <code>dockerFileDir</code>
      */
@@ -40,6 +50,17 @@ public class BuildImageConfiguration implements Serializable {
      */
     @Parameter
     private String dockerArchive;
+
+    /**
+     * Pattern for the image name we expect to find in the dockerArchive.
+     *
+     * If set, the archive is scanned prior to sending to Docker and checked to
+     * ensure a matching name is found linked to one of the images in the archive.
+     * After loading, the image with the matching name will be tagged with the
+     * image name configured in this project.
+     */
+    @Parameter
+    private String loadNamePattern;
 
     /**
      * How interpolation of a dockerfile should be performed
@@ -60,6 +81,9 @@ public class BuildImageConfiguration implements Serializable {
     private Map<String, String> fromExt;
 
     @Parameter
+    private List<String> cacheFrom;
+
+    @Parameter
     private String registry;
 
     @Parameter
@@ -75,6 +99,12 @@ public class BuildImageConfiguration implements Serializable {
     private String imagePullPolicy;
 
     /**
+     * SHELL excutable with params
+     */
+    @Parameter
+    private Arguments shell;
+
+    /**
      * RUN Commands within Build/Image
      */
     @Parameter
@@ -83,8 +113,12 @@ public class BuildImageConfiguration implements Serializable {
     @Parameter
     private String cleanup;
 
+    @Deprecated
     @Parameter
     private Boolean nocache;
+
+    @Parameter
+    private Boolean noCache;
 
     @Parameter
     private Boolean optimise;
@@ -144,6 +178,27 @@ public class BuildImageConfiguration implements Serializable {
         return dockerFileFile != null;
     }
 
+    public String getLoadNamePattern() {
+        return loadNamePattern;
+    }
+
+    public File getContextDir() {
+        if (!isDockerFileMode()) {
+            return null;
+        }
+        if (contextDir != null) {
+            return new File(contextDir);
+        }
+        if (getDockerFile().getParentFile() == null) {
+            return new File("");
+        }
+        return getDockerFile().getParentFile();
+    }
+
+    public String getContextDirRaw() {
+        return contextDir;
+    }
+
     public File getDockerFile() {
         return dockerFileFile;
     }
@@ -181,6 +236,10 @@ public class BuildImageConfiguration implements Serializable {
 
     public Map<String, String> getFromExt() {
         return fromExt;
+    }
+
+    public List<String> getCacheFrom() {
+        return cacheFrom;
     }
 
     public String getRegistry() {
@@ -243,8 +302,14 @@ public class BuildImageConfiguration implements Serializable {
         return CleanupMode.parse(cleanup != null ? cleanup : DEFAULT_CLEANUP);
     }
 
-    public boolean nocache() {
-        return nocache != null ? nocache : false;
+    public boolean noCache() {
+        if (noCache != null) {
+            return noCache;
+        }
+        if (nocache != null) {
+            return nocache;
+        }
+        return false;
     }
 
     public boolean optimise() {
@@ -256,7 +321,7 @@ public class BuildImageConfiguration implements Serializable {
     }
 
     public Boolean getNoCache() {
-        return nocache;
+        return noCache != null ? noCache : nocache;
     }
 
     public Boolean getOptimise() {
@@ -279,6 +344,10 @@ public class BuildImageConfiguration implements Serializable {
         return entryPoint;
     }
 
+    public Arguments getShell() {
+        return shell;
+    }
+
     @Nonnull
     public List<String> getRunCmds() {
         return EnvUtil.removeEmptyEntries(runCmds);
@@ -294,6 +363,10 @@ public class BuildImageConfiguration implements Serializable {
 
     public Map<String, String> getArgs() {
         return args;
+    }
+
+    public File getAbsoluteContextDirPath(MojoParameters mojoParams) {
+        return EnvUtil.prepareAbsoluteSourceDirPath(mojoParams, getContextDir().getPath());
     }
 
     public File getAbsoluteDockerFilePath(MojoParameters mojoParams) {
@@ -319,6 +392,11 @@ public class BuildImageConfiguration implements Serializable {
             }
         }
 
+        public Builder contextDir(String dir) {
+            config.contextDir = dir;
+            return this;
+        }
+
         public Builder dockerFileDir(String dir) {
             config.dockerFileDir = dir;
             return this;
@@ -334,6 +412,11 @@ public class BuildImageConfiguration implements Serializable {
             return this;
         }
 
+        public Builder loadNamePattern(String archiveEntryRepoTagPattern) {
+            config.loadNamePattern = archiveEntryRepoTagPattern;
+            return this;
+        }
+
         public Builder filter(String filter) {
             config.filter = filter;
             return this;
@@ -346,6 +429,22 @@ public class BuildImageConfiguration implements Serializable {
 
         public Builder fromExt(Map<String, String> fromExt) {
             config.fromExt = fromExt;
+            return this;
+        }
+
+        public Builder cacheFrom(String cacheFrom, String ...more) {
+            if (more == null || more.length == 0) {
+                return cacheFrom(Collections.singletonList(cacheFrom));
+            }
+
+            List<String> list = new ArrayList<>();
+            list.add(cacheFrom);
+            list.addAll(Arrays.asList(more));
+            return cacheFrom(list);
+        }
+
+        public Builder cacheFrom(Collection<String> cacheFrom) {
+            config.cacheFrom = cacheFrom != null ? new ArrayList<>(cacheFrom) : null;
             return this;
         }
 
@@ -376,6 +475,14 @@ public class BuildImageConfiguration implements Serializable {
 
         public Builder imagePullPolicy(String imagePullPolicy) {
             config.imagePullPolicy = imagePullPolicy;
+            return this;
+        }
+
+        public Builder shell(Arguments shell) {
+            if(shell != null) {
+                config.shell = shell;
+            }
+
             return this;
         }
 
@@ -434,8 +541,8 @@ public class BuildImageConfiguration implements Serializable {
             return this;
         }
 
-        public Builder nocache(Boolean nocache) {
-            config.nocache = nocache;
+        public Builder noCache(Boolean noCache) {
+            config.noCache = noCache;
             return this;
         }
 
@@ -503,7 +610,10 @@ public class BuildImageConfiguration implements Serializable {
 
         initDockerFileFile(log);
 
-        if (healthCheck != null) {
+        if (cacheFrom != null && !cacheFrom.isEmpty()) {
+            // cachefrom query param was introduced in v1.25
+            return "1.25";
+        } else if (healthCheck != null) {
             // HEALTHCHECK support added later
             return "1.24";
         } else if (args != null) {
@@ -529,19 +639,35 @@ public class BuildImageConfiguration implements Serializable {
     }
 
     private File findDockerFileFile(Logger log) {
+        if(dockerFileDir != null && contextDir != null) {
+            log.warn("Both contextDir (%s) and deprecated dockerFileDir (%s) are configured. Using contextDir.", contextDir, dockerFileDir);
+        }
+
         if (dockerFile != null) {
             File dFile = new File(dockerFile);
-            if (dockerFileDir == null) {
+            if (dockerFileDir == null && contextDir == null) {
                 return dFile;
             } else {
-                if (dFile.isAbsolute()) {
-                    throw new IllegalArgumentException("<dockerFile> can not be absolute path if <dockerFileDir> also set.");
+                if(contextDir != null) {
+                    if (dFile.isAbsolute()) {
+                        return dFile;
+                    }
+                    return new File(contextDir, dockerFile);
                 }
-                if (EnvUtil.isWindows() && !EnvUtil.isValidWindowsFileName(dockerFile)) {
-                    throw new IllegalArgumentException(String.format("Invalid Windows file name %s for <dockerFile>", dockerFile));
+
+                if (dockerFileDir != null) {
+                    if (dFile.isAbsolute()) {
+                        throw new IllegalArgumentException("<dockerFile> can not be absolute path if <dockerFileDir> also set.");
+                    }
+                    log.warn("dockerFileDir parameter is deprecated, please migrate to contextDir");
+                    return new File(dockerFileDir, dockerFile);
                 }
-                return new File(dockerFileDir, dockerFile);
             }
+        }
+
+
+        if (contextDir != null) {
+            return new File(contextDir, "Dockerfile");
         }
 
         if (dockerFileDir != null) {
