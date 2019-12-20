@@ -1,16 +1,5 @@
 package io.fabric8.maven.docker.util;
 
-import java.io.File;
-import java.io.FileWriter;
-import java.io.IOException;
-import java.io.Writer;
-import java.nio.file.Files;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-
-import com.google.common.collect.ImmutableMap;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
@@ -18,9 +7,7 @@ import io.fabric8.maven.docker.access.AuthConfig;
 import mockit.Expectations;
 import mockit.Mock;
 import mockit.Mocked;
-import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.bootstrap.HttpServer;
-import org.apache.http.impl.bootstrap.ServerBootstrap;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.settings.Server;
 import org.apache.maven.settings.Settings;
@@ -38,9 +25,18 @@ import org.junit.contrib.java.lang.system.EnvironmentVariables;
 import org.junit.rules.ExpectedException;
 import org.sonatype.plexus.components.sec.dispatcher.SecDispatcher;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.io.IOException;
+import java.io.Writer;
+import java.nio.file.Files;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
 import static java.util.Collections.singletonMap;
 import static java.util.UUID.randomUUID;
-import static org.apache.http.HttpStatus.SC_NOT_FOUND;
 import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.Matchers.hasProperty;
 import static org.hamcrest.Matchers.instanceOf;
@@ -523,34 +519,6 @@ public class AuthConfigFactoryTest {
     }
 
     @Test
-    public void ecsTaskRole() throws IOException, MojoExecutionException {
-        String containerCredentialsUri = "/v2/credentials/" + randomUUID().toString();
-        String accessKeyId = randomUUID().toString();
-        String secretAccessKey = randomUUID().toString();
-        String sessionToken = randomUUID().toString();
-        givenEcsMetadataService(containerCredentialsUri, accessKeyId, secretAccessKey, sessionToken);
-        setupEcsMetadataConfiguration(httpServer, containerCredentialsUri);
-
-        AuthConfig authConfig = factory.createAuthConfig(false, true, null, settings, "user", ECR_NAME);
-
-        verifyAuthConfig(authConfig, accessKeyId, secretAccessKey, null, sessionToken);
-    }
-
-    @Test
-    public void fargateTaskRole() throws IOException, MojoExecutionException {
-        String containerCredentialsUri = "v2/credentials/" + randomUUID().toString();
-        String accessKeyId = randomUUID().toString();
-        String secretAccessKey = randomUUID().toString();
-        String sessionToken = randomUUID().toString();
-        givenEcsMetadataService("/" + containerCredentialsUri, accessKeyId, secretAccessKey, sessionToken);
-        setupEcsMetadataConfiguration(httpServer, containerCredentialsUri);
-
-        AuthConfig authConfig = factory.createAuthConfig(false, true, null, settings, "user", ECR_NAME);
-
-        verifyAuthConfig(authConfig, accessKeyId, secretAccessKey, null, sessionToken);
-    }
-
-    @Test
     public void awsTemporaryCredentialsArePickedUpFromEnvironment() throws MojoExecutionException {
         String accessKeyId = randomUUID().toString();
         String secretAccessKey = randomUUID().toString();
@@ -611,30 +579,6 @@ public class AuthConfigFactoryTest {
                 return server;
             }
         };
-    }
-
-    private void givenEcsMetadataService(String containerCredentialsUri, String accessKeyId, String secretAccessKey, String sessionToken) throws IOException {
-        httpServer = ServerBootstrap.bootstrap()
-                .registerHandler("*", (request, response, context) -> {
-                    System.out.println("REQUEST: " + request.getRequestLine());
-                    if (containerCredentialsUri.matches(request.getRequestLine().getUri())) {
-                        response.setEntity(new StringEntity(gsonBuilder.create().toJson(ImmutableMap.of(
-                                "AccessKeyId", accessKeyId,
-                                "SecretAccessKey", secretAccessKey,
-                                "Token", sessionToken
-                        ))));
-                    } else {
-                        response.setStatusCode(SC_NOT_FOUND);
-                    }
-                })
-                .create();
-        httpServer.start();
-    }
-
-    private void setupEcsMetadataConfiguration(HttpServer httpServer, String containerCredentialsUri) {
-        environmentVariables.set("ECS_METADATA_ENDPOINT", "http://" +
-                httpServer.getInetAddress().getHostAddress()+":" + httpServer.getLocalPort());
-        environmentVariables.set("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", containerCredentialsUri);
     }
 
     private void verifyAuthConfig(AuthConfig config, String username, String password, String email, String auth) {
